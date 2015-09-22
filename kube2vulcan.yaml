@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kube2vulcan
+spec:
+  containers:
+  - name: curl
+    image: quay.io/rainbean/kube2vulcan:latest
+    args:
+      # command = "/Kube2Vulcan"
+      - -master
+      - 192.168.200.60:8080
+      - -etcd
+      - http://192.168.200.60:2379
+    imagePullPolicy: IfNotPresent
+  restartPolicy: Always
