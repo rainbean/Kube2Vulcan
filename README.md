@@ -38,6 +38,10 @@ Build dependency packages
 
 Build binary
 ===============
+* Download and build 
+		go get github.com/rainbean/Kube2Vulcan 
+
+* Build only
 		go build github.com/rainbean/Kube2Vulcan
 
 Usage Syntax
