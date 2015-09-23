@@ -20,7 +20,7 @@ Prerequisite [Mac OSX]
 
 * Create compiler alias
 
-		alias go="docker run --rm -v "$GOPATH":/go -w /go golang go"
+		alias goc="docker run --rm -v "$GOPATH":/go -w /go -e CGO_ENABLED=0 -e GOOS=linux golang go"
 
 Prerequisite [Linux]
 ===============
@@ -30,29 +30,42 @@ Prerequisite [Linux]
 
 		export GOPATH=~/Code/Go
 
+* Create compiler alias
+
+		alias goc="CGO_ENABLED=0 GOOS=linux go"
+
 Build dependency packages
 ===============
 * WebSocket
 
-		go get github.com/gorilla/websocket
+		goc get github.com/gorilla/websocket
 
 * EtcD
 
-		go get github.com/coreos/go-etcd/etcd
+		goc get github.com/coreos/go-etcd/etcd
 
 * K8s API
 
-		go get github.com/GoogleCloudPlatform/kubernetes/pkg/api
+		goc get github.com/GoogleCloudPlatform/kubernetes/pkg/api
 
 Build binary
 ===============
 * Download and build 
 
-		go get github.com/rainbean/Kube2Vulcan 
+		goc get -a -installsuffix cgo github.com/rainbean/Kube2Vulcan 
 
 * Build only
 
-		go build github.com/rainbean/Kube2Vulcan
+		goc build -a -installsuffix cgo github.com/rainbean/Kube2Vulcan
+
+Note
+===============
+
+Environment and build arugment is to statically compile our app with all libraries built in, refer https://blog.codeship.com/building-minimal-docker-containers-for-go-applications/
+
+		CGO_ENABLED=0 GOOS=linux 
+		build -a -installsuffix cgo 
+
 
 Usage Syntax
 ===============
