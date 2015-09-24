@@ -12,5 +12,7 @@ spec:
       - 192.168.200.60:8080
       - -etcd
       - http://192.168.200.60:2379
+      - -ports
+      - 8000,3000,4040,6066
     imagePullPolicy: IfNotPresent
   restartPolicy: Always

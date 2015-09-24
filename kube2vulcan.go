@@ -15,24 +15,36 @@ import (
 	"encoding/json"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	"flag"
-	"github.com/coreos/go-etcd/etcd"
+	"github.com/coreos/etcd/client"
+	"golang.org/x/net/context"
 	"fmt"
 	"strings"
 	"time"
+	"strconv"
 )
+
+type Endpoint struct {
+  Name string
+  Namespace string
+  IP string
+  Port int
+}
 
 var k8sAddress string
 var etcdAddress string
+var listenPorts string
+var kapi client.KeysAPI
 
 // Always called before main(), per package 
 func init() {
 	flag.StringVar(&k8sAddress, "master", "", "Address of Kubernetes API server")
 	flag.StringVar(&etcdAddress, "etcd", "", "Address of etcd of Vulcan daemon")
+	flag.StringVar(&listenPorts, "ports", "8000", "Valid ports to proxy")
 
 	flag.Parse()
 	
 	if k8sAddress == "" || etcdAddress == "" {
-		log.Fatal(`Missing required properties. Usage: -master "[k8s-master-ip]:[port]" -etcd "http://[etcd-ip]:[port],http://[2nd-etcd-ip]:[port],..."`)
+		log.Fatal(`Missing required properties. Usage: -master "[k8s-master-ip]:[port]" -etcd "http://[etcd-ip]:[port],http://[2nd-etcd-ip]:[port],..." -ports "8000,8080"`)
 	}
 }
 
@@ -40,6 +52,21 @@ func init() {
 // Connect to Kubernetes API server and monitor for PODS/SVC events, 
 // then sync to etcd in syntax of vulcand
 func main() {
+	// create etcd client connection
+	cfg := client.Config{
+        Endpoints:               []string{etcdAddress},
+        Transport:               client.DefaultTransport,
+        // set timeout per request to fail fast when the target endpoint is unavailable
+        HeaderTimeoutPerRequest: time.Second,
+    }
+    etcClient, err := client.New(cfg)
+    if err != nil {
+        log.Fatal(err)
+    }
+	// get etcd key api
+	kapi = client.NewKeysAPI(etcClient)
+	addListenPorts()
+
 	var wsPodsErrors chan string = make(chan string)
 	var wsSvcErrors chan string = make(chan string)
 
@@ -165,209 +192,168 @@ func svcListener(wsConn *websocket.Conn, wsErrors chan string) {
 	}
 }
 
-/*************
- *  Register a new backend server in Vulcan based on the new Pod
- *  // *** Pods as a App ***
- *   Frontend: http://[pods].[namespace].k8s:8000/ 
- *   Route to: http://[pods-ip]:[pods-first-tcp-container-port]
- *
- *   Backend : /vulcand/backends/[namespace]-[pods]/servers/srv '{"URL": "http://[pods-ip]:[pods-first-tcp-container-port]"}'
- *
- *  ToDo: current configuration only listen at 8000 port
- *************/
 func registerPod(pod api.Pod) {
 	if (pod.Status.Phase != "Running") {
 		return
 	}
 
-	idx := -1
-	
-	for i,port := range pod.Spec.Containers[0].Ports {
+	log.Printf("Inspect pod %v ...", pod.Name)
+
+	for _, container := range pod.Spec.Containers {	
+		for _, port := range container.Ports {
+			if "TCP" != port.Protocol {
+				continue // bypass non TCP port
+			}
+			
+			for _, vport := range strings.Split(listenPorts, ",") {
+				if vport == strconv.Itoa(port.ContainerPort) {
+					hook( Endpoint{Name: pod.Name, Namespace: pod.Namespace, IP: pod.Status.PodIP, Port: port.ContainerPort} )
+				}
+			}
+		}
+	}
+}
+
+func unregisterPod(pod api.Pod) {
+	unhook( Endpoint{Name: pod.Name, Namespace: pod.Namespace} )
+}
+
+func registerSvc(svc api.Service) {
+	log.Printf("Inspect svc %v ...", svc.Name)
+
+	for _, port := range svc.Spec.Ports {
 		if "TCP" != port.Protocol {
 			continue // bypass non TCP port
-		} else if 443 == port.ContainerPort || 8443 == port.ContainerPort {
-			continue // bypass HTTPS ports
-		} else {
-			idx = i
-			break // match first proper port
 		}
-    }
-
-	if -1 == idx {
-		log.Printf("No proper ports exposed by container %v, skipping registration", pod.Name)
-		return
-	}
-	
-	if "TCP" != pod.Spec.Containers[0].Ports[idx].Protocol {
-		log.Printf("First exposed port is not TCP by container %v, skipping registration", pod.Name)
-		return
-	}
-
-	log.Printf("Register pod %v listening on %v:%v", 
-		pod.Name, pod.Status.PodIP, pod.Spec.Containers[0].Ports[idx].ContainerPort)
-
-	// Get Etcd client
-	client := etcd.NewClient(strings.Split(etcdAddress, ","))
-	uuid := fmt.Sprintf("%v-%v", pod.Namespace, pod.Name)
-
-	key := fmt.Sprintf("/vulcand/backends/%v/backend", uuid)
-	value := fmt.Sprintf(`{"Type": "http"}`)
-	_, err := client.Set(key, value, 0);
-	if err != nil {
-		log.Printf("Can't enable backend on key %v", key)
-		log.Print(err)
-		return
-	}
-
-	key = fmt.Sprintf("/vulcand/backends/%v/servers/svc", uuid)
-	value = fmt.Sprintf(`{"URL": "http://%v:%v"}`, pod.Status.PodIP, pod.Spec.Containers[0].Ports[idx].ContainerPort)
-
-	_, err = client.Set(key, value, 0);
-	if err != nil {
-		log.Printf("Can't config backend on key %v", key)
-		log.Fatal(err)
-		return
-	}
-
-	key = fmt.Sprintf("/vulcand/frontends/%v/frontend", uuid)
-	value = fmt.Sprintf(`{"Type": "http", "BackendId": "%v", "Route": "HostRegexp(` + "`%v.%v.*`" + `)"}`, uuid, pod.Name, pod.Namespace)
-
-	_, err = client.Set(key, value, 0);
-	if err != nil {
-		log.Printf("Can't config backend on key %v", key)
-		log.Fatal(err)
-		return
+		
+		for _, vport := range strings.Split(listenPorts, ",") {
+			if vport == strconv.Itoa(port.Port) {
+				hook( Endpoint{Name: svc.Name, Namespace: svc.Namespace, IP: svc.Spec.ClusterIP, Port: port.Port} )
+			}
+		}
 	}
 }
 
-// Remove a backend server from Vulcan when a Pod is deleted.
-func unregisterPod(pod api.Pod) {
-	log.Printf("Unregister pod %v listening on %v", 
-		pod.Name, pod.Status.PodIP)
-
-	// Get Etcd client
-	client := etcd.NewClient(strings.Split(etcdAddress, ","))
-
-	uuid := fmt.Sprintf("%v-%v", pod.Namespace, pod.Name)
-
-	key := fmt.Sprintf("/vulcand/backends/%v/backend", uuid)
-	_, err := client.Delete(key, false)
-	if err != nil {
-		log.Printf("Failed to delete entry '%v'. It might already be removed", key);
-		log.Println(err)
-	}
-
-	key = fmt.Sprintf("/vulcand/backends/%v/servers/svc", uuid)
-	_, err = client.Delete(key, false)
-	if err != nil {
-		log.Printf("Failed to delete entry '%v'. It might already be removed", key);
-		log.Println(err)
-	}
-
-	key = fmt.Sprintf("/vulcand/frontends/%v/frontend", uuid)
-	_, err = client.Delete(key, false)
-	if err != nil {
-		log.Printf("Failed to delete entry '%v'. It might already be removed", key);
-		log.Println(err)
-	}
+func unregisterSvc(svc api.Service) {
+	unhook( Endpoint{Name: svc.Name, Namespace: svc.Namespace} )
 }
-
-
 
 /*************
- *  Register a new backend server in Vulcan based on the new Service
- *  // *** Service as a App ***
- *   Frontend: http://[service].[namespace].k8s:8000/ 
- *   Route to: http://[service-ip]:[service-first-tcp-port]
+ *  Register a new backend server in Vulcan based on the Pod
  *
- *   Backend : /vulcand/backends/[namespace]-[service]/servers/srv '{"URL": "http://[service-ip]:[service-first-tcp-port]"}'
+ *   Frontend: http://[pod].[namespace].k8s:[container-port]/ 
+ *   Route to: http://[pod-ip]:[pod-container-port]
  *
- *  ToDo: current configuration only listen at 8000 port
+ *  Valid container ports depends on '-port' parameter, default 8000
  *************/
-func registerSvc(svc api.Service) {
-	idx := -1
-	
-	for i,port := range svc.Spec.Ports {
-		if "TCP" != port.Protocol {
-			continue // bypass non TCP port
-		} else if 443 == port.Port || 8443 == port.Port {
-			continue // bypass HTTPS ports
-		} else {
-			idx = i
-			break // match first proper port
-		}
-    }
+func hook(e Endpoint) {
+	log.Printf("Register %v listening on %v:%v", e.Name, e.IP, e.Port)
 
-	if -1 == idx {
-		log.Printf("No proper ports exposed by service %v, skipping registration", svc.Name)
-		return
-	}
+	// uuid name
+	uuid := fmt.Sprintf("%v-%v-%v", e.Namespace, e.Name, e.Port)
 
-	log.Printf("Register service %v listening on %v:%v", 
-		svc.Name, svc.Spec.ClusterIP, svc.Spec.Ports[idx].Port)
-
-	// Get Etcd client
-	client := etcd.NewClient(strings.Split(etcdAddress, ","))
-	uuid := fmt.Sprintf("%v-%v", svc.Namespace, svc.Name)
-
+	// set backend
 	key := fmt.Sprintf("/vulcand/backends/%v/backend", uuid)
 	value := fmt.Sprintf(`{"Type": "http"}`)
-	_, err := client.Set(key, value, 0);
+
+	_, err := kapi.Set(context.Background(), key, value, nil)
 	if err != nil {
 		log.Printf("Can't enable backend on key %v", key)
 		log.Print(err)
 		return
-	}
+	}	
 
+	// set backend server url
 	key = fmt.Sprintf("/vulcand/backends/%v/servers/svc", uuid)
-	value = fmt.Sprintf(`{"URL": "http://%v:%v"}`, svc.Spec.ClusterIP, svc.Spec.Ports[idx].Port)
+	value = fmt.Sprintf(`{"URL": "http://%v:%v"}`, e.IP, e.Port)
 
-	_, err = client.Set(key, value, 0);
+	_, err = kapi.Set(context.Background(), key, value, nil)
 	if err != nil {
 		log.Printf("Can't config backend on key %v", key)
-		log.Fatal(err)
+		log.Print(err)
 		return
 	}
 
+	// set frontend rule
 	key = fmt.Sprintf("/vulcand/frontends/%v/frontend", uuid)
-	value = fmt.Sprintf(`{"Type": "http", "BackendId": "%v", "Route": "HostRegexp(` + "`%v.%v.*`" + `)"}`, uuid, svc.Name, svc.Namespace)
+	rule := fmt.Sprintf("HostRegexp(`%v.%v.*`) && Port(`%v`)", e.Name, e.Namespace, e.Port)
+	//rule := fmt.Sprintf("HostRegexp(`%v.%v.*`)", e.Name, e.Namespace)
+	value = fmt.Sprintf(`{"Type": "http", "BackendId": "%v", "Route": "%v"}`, uuid, rule)
 
-	_, err = client.Set(key, value, 0);
+	_, err = kapi.Set(context.Background(), key, value, nil)
 	if err != nil {
-		log.Printf("Can't config backend on key %v", key)
-		log.Fatal(err)
+		log.Printf("Can't config frontend on key %v", key)
+		log.Print(err)
 		return
 	}
 }
 
-// Remove a backend server from Vulcan when a Service is deleted
-func unregisterSvc(svc api.Service) {
-	log.Printf("Unregister svc %v listening on %v", 
-		svc.Name, svc.Spec.ClusterIP)
 
-	// Get Etcd client
-	client := etcd.NewClient(strings.Split(etcdAddress, ","))
+// Remove a backend server from Vulcan when a Pod is deleted.
+func unhook(e Endpoint) {
+	log.Printf("Unregister %v", e.Name)
 
-	uuid := fmt.Sprintf("%v-%v", svc.Namespace, svc.Name)
+	// uuid name (prefix)
+	uuid := fmt.Sprintf("%v-%v", e.Namespace, e.Name)
 
-	key := fmt.Sprintf("/vulcand/backends/%v/backend", uuid)
-	_, err := client.Delete(key, false)
+	// remove backend
+	r, err := kapi.Get(context.Background(), "/vulcand/backends", nil)
 	if err != nil {
-		log.Printf("Failed to delete entry '%v'. It might already be removed", key);
-		log.Println(err)
-	}
+		log.Println("Can't get backend list")
+        log.Print(err)
+		return
+    }
+	
+	for _, node := range r.Node.Nodes {
+        if strings.Contains(node.Key, uuid) {
+			// match key, remove it recursively
+            _, err = kapi.Delete(context.Background(), node.Key, &client.DeleteOptions{Recursive: true})
+            if err != nil {
+				log.Print(err)
+            }
+		}
+    }
 
-	key = fmt.Sprintf("/vulcand/backends/%v/servers/svc", uuid)
-	_, err = client.Delete(key, false)
+	// remove frontend
+	r, err = kapi.Get(context.Background(), "/vulcand/frontends", nil)
 	if err != nil {
-		log.Printf("Failed to delete entry '%v'. It might already be removed", key);
-		log.Println(err)
-	}
+		log.Println("Can't get frontend list")
+        log.Print(err)
+		return
+    }
+	
+	for _, node := range r.Node.Nodes {
+        if strings.Contains(node.Key, uuid) {
+			// match key, remove it recursively
+            _, err = kapi.Delete(context.Background(), node.Key, &client.DeleteOptions{Recursive: true})
+            if err != nil {
+				log.Print(err)
+            }
+		} 
+    }
+}
 
-	key = fmt.Sprintf("/vulcand/frontends/%v/frontend", uuid)
-	_, err = client.Delete(key, false)
+func addListenPorts() {
+	log.Printf("Enable extra listen port of Vulcan, %v", listenPorts)
+
+	// remove previous listen ports
+	_, err := kapi.Delete(context.Background(), "/vulcand/listeners", &client.DeleteOptions{Recursive: true})
 	if err != nil {
-		log.Printf("Failed to delete entry '%v'. It might already be removed", key);
-		log.Println(err)
+		log.Print(err)
 	}
+	
+	// add new listen ports
+	for i, vport := range strings.Split(listenPorts, ",") {
+		if 0 == i {
+			continue // we don't register default/first port to avoid vulcand conflict/crash
+		}
+		key := fmt.Sprintf("/vulcand/listeners/%v", vport)
+		value := fmt.Sprintf(`{"Protocol":"http", "Address":{"Network":"tcp", "Address":"0.0.0.0:%v"}}`, vport)
+	
+		_, err := kapi.Set(context.Background(), key, value, nil)
+		if err != nil {
+			log.Printf("Can't create listen port on key %v", key)
+			log.Print(err)
+		}
+    }
 }
