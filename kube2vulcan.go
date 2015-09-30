@@ -33,6 +33,7 @@ type Endpoint struct {
 var k8sAddress string
 var etcdAddress string
 var listenPorts string
+var retainHostHeader bool
 var kapi client.KeysAPI
 
 // Always called before main(), per package 
@@ -40,6 +41,7 @@ func init() {
 	flag.StringVar(&k8sAddress, "master", "", "Address of Kubernetes API server")
 	flag.StringVar(&etcdAddress, "etcd", "", "Address of etcd of Vulcan daemon")
 	flag.StringVar(&listenPorts, "ports", "8000", "Valid ports to proxy")
+	flag.BoolVar(&retainHostHeader, "retainHostHeader", false, "Retain pristin client host header, default:false")
 
 	flag.Parse()
 	
@@ -278,7 +280,7 @@ func hook(e Endpoint) {
 	key = fmt.Sprintf("/vulcand/frontends/%v/frontend", uuid)
 	rule := fmt.Sprintf("HostRegexp(`%v.%v.*`) && Port(`%v`)", e.Name, e.Namespace, e.Port)
 	//rule := fmt.Sprintf("HostRegexp(`%v.%v.*`)", e.Name, e.Namespace)
-	value = fmt.Sprintf(`{"Type": "http", "BackendId": "%v", "Route": "%v"}`, uuid, rule)
+	value = fmt.Sprintf(`{"Type": "http", "BackendId": "%v", "Route": "%v", "Settings": {"PassHostHeader": %v}}`, uuid, rule, retainHostHeader)
 
 	_, err = kapi.Set(context.Background(), key, value, nil)
 	if err != nil {

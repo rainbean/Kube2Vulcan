@@ -71,6 +71,13 @@ First ports must be Vulcand's listen port, addtional ports cover exposed service
 
 		Kube2Vulcan -master [k8s-master-ip]:[port] -etcd http://[etcd-ip]:[port],http://[2nd-etcd-ip]:[port],..., -ports [vulcand-port][,addtional ports]
 
+Flags:
+		
+		-master              Kubernetes API server address (IP:Port)
+		-etcd                Etcd server address which vulcand monitor (url,...)
+		-ports               List of valid backend ports to serve, first port must be default port of vulcand
+		-retainHostHeader    [Optional] Retain pristin client host header, boolean (default: false)
+
 Running as Contrainner
 ===============
 		docker run -d quay.io/rainbean/kube2vulcan:latest -master 192.168.200.60:8080 -etcd http://127.0.0.1:2379 -ports 8000

@@ -5,14 +5,12 @@ metadata:
 spec:
   containers:
   - name: curl
-    image: quay.io/rainbean/kube2vulcan:latest
+    image: quay.io/rainbean/kube2vulcan:v0.4.1
     args:
       # command = "/Kube2Vulcan"
-      - -master
-      - 192.168.200.60:8080
-      - -etcd
-      - http://192.168.200.60:2379
-      - -ports
-      - 8000,3000,4040,6066
+      - -master=192.168.200.60:8080
+      - -etcd=http://192.168.200.60:2379
+      - -ports=8000,3000,4040,6066
+      - -retainHostHeader=true
     imagePullPolicy: IfNotPresent
   restartPolicy: Always
