@@ -30,33 +30,27 @@ type Endpoint struct {
   Port int
 }
 
-var k8sAddress string
-var etcdAddress string
-var listenPorts string
-var retainHostHeader bool
-var kapi client.KeysAPI
-
-// Always called before main(), per package 
-func init() {
-	flag.StringVar(&k8sAddress, "master", "", "Address of Kubernetes API server")
-	flag.StringVar(&etcdAddress, "etcd", "", "Address of etcd of Vulcan daemon")
-	flag.StringVar(&listenPorts, "ports", "8000", "Valid ports to proxy")
-	flag.BoolVar(&retainHostHeader, "retainHostHeader", false, "Retain pristin client host header, default:false")
-
-	flag.Parse()
-	
-	if k8sAddress == "" || etcdAddress == "" {
-		log.Fatal(`Missing required properties. Usage: -master "[k8s-master-ip]:[port]" -etcd "http://[etcd-ip]:[port],http://[2nd-etcd-ip]:[port],..." -ports "8000,8080"`)
-	}
-}
+var (
+	argK8sAddr              = flag.String("master", "", "Address of Kubernetes API server")
+	argEtcdAddr             = flag.String("etcd", "", "Address of etcd of Vulcan daemon")
+	argVulcandPorts         = flag.String("ports", "8000", "Valid ports to proxy")
+	argRetainHostHeader     = flag.Bool("retainHostHeader", false, "Retain pristin client host header, default:false")
+	kapi client.KeysAPI 
+)
 
 // Main function
 // Connect to Kubernetes API server and monitor for PODS/SVC events, 
 // then sync to etcd in syntax of vulcand
 func main() {
+	flag.Parse()
+	
+	if *argK8sAddr == "" || *argEtcdAddr == "" {
+		log.Fatal(`Missing required properties. Usage: -master "[k8s-master-ip]:[port]" -etcd "http://[etcd-ip]:[port],http://[2nd-etcd-ip]:[port],..." -ports "8000,8080"`)
+	}
+	
 	// create etcd client connection
 	cfg := client.Config{
-        Endpoints:               []string{etcdAddress},
+        Endpoints:               []string{*argEtcdAddr},
         Transport:               client.DefaultTransport,
         // set timeout per request to fail fast when the target endpoint is unavailable
         HeaderTimeoutPerRequest: time.Second,
@@ -65,6 +59,7 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
+
 	// get etcd key api
 	kapi = client.NewKeysAPI(etcClient)
 	addListenPorts()
@@ -72,8 +67,8 @@ func main() {
 	var wsPodsErrors chan string = make(chan string)
 	var wsSvcErrors chan string = make(chan string)
 
-	podsEndpoint := fmt.Sprintf("ws://%v/api/v1/pods?watch=true", k8sAddress)
-	svcEndpoint := fmt.Sprintf("ws://%v/api/v1/services?watch=true", k8sAddress)
+	podsEndpoint := fmt.Sprintf("ws://%v/api/v1/pods?watch=true", argK8sAddr)
+	svcEndpoint := fmt.Sprintf("ws://%v/api/v1/services?watch=true", argK8sAddr)
 	
 	go podsListener(openConnection(podsEndpoint), wsPodsErrors)
 	go svcListener(openConnection(svcEndpoint), wsSvcErrors)
@@ -207,7 +202,7 @@ func registerPod(pod api.Pod) {
 				continue // bypass non TCP port
 			}
 			
-			for _, vport := range strings.Split(listenPorts, ",") {
+			for _, vport := range strings.Split(*argVulcandPorts, ",") {
 				if vport == strconv.Itoa(port.ContainerPort) {
 					hook( Endpoint{Name: pod.Name, Namespace: pod.Namespace, IP: pod.Status.PodIP, Port: port.ContainerPort} )
 				}
@@ -228,7 +223,7 @@ func registerSvc(svc api.Service) {
 			continue // bypass non TCP port
 		}
 		
-		for _, vport := range strings.Split(listenPorts, ",") {
+		for _, vport := range strings.Split(*argVulcandPorts, ",") {
 			if vport == strconv.Itoa(port.Port) {
 				hook( Endpoint{Name: svc.Name, Namespace: svc.Namespace, IP: svc.Spec.ClusterIP, Port: port.Port} )
 			}
@@ -280,7 +275,7 @@ func hook(e Endpoint) {
 	key = fmt.Sprintf("/vulcand/frontends/%v/frontend", uuid)
 	rule := fmt.Sprintf("HostRegexp(`%v.%v.*`) && Port(`%v`)", e.Name, e.Namespace, e.Port)
 	//rule := fmt.Sprintf("HostRegexp(`%v.%v.*`)", e.Name, e.Namespace)
-	value = fmt.Sprintf(`{"Type": "http", "BackendId": "%v", "Route": "%v", "Settings": {"PassHostHeader": %v}}`, uuid, rule, retainHostHeader)
+	value = fmt.Sprintf(`{"Type": "http", "BackendId": "%v", "Route": "%v", "Settings": {"PassHostHeader": %v}}`, uuid, rule, argRetainHostHeader)
 
 	_, err = kapi.Set(context.Background(), key, value, nil)
 	if err != nil {
@@ -336,7 +331,7 @@ func unhook(e Endpoint) {
 }
 
 func addListenPorts() {
-	log.Printf("Enable extra listen port of Vulcan, %v", listenPorts)
+	log.Printf("Enable extra listen port of Vulcan, %v", argVulcandPorts)
 
 	// remove previous listen ports
 	_, err := kapi.Delete(context.Background(), "/vulcand/listeners", &client.DeleteOptions{Recursive: true})
@@ -345,7 +340,7 @@ func addListenPorts() {
 	}
 	
 	// add new listen ports
-	for i, vport := range strings.Split(listenPorts, ",") {
+	for i, vport := range strings.Split(*argVulcandPorts, ",") {
 		if 0 == i {
 			continue // we don't register default/first port to avoid vulcand conflict/crash
 		}
