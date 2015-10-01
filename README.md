@@ -9,7 +9,7 @@ Route rule:
 
 Port must be TCP protocol
 
-Prerequisite [Mac OSX]
+Prerequisite [Mac OSX and Go Version 1.4-]
 ===============
 * Install boot2docker
 * Launch boot2docker
@@ -21,7 +21,7 @@ Prerequisite [Mac OSX]
 
 		alias goc="docker run --rm -v "$GOPATH":/go -w /go -e CGO_ENABLED=0 -e GOOS=linux golang go"
 
-Prerequisite [Linux]
+Prerequisite [Linux or Go Version 1.5+]
 ===============
 * Install docker
 * Install GoLang compiler
