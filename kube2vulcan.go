@@ -256,7 +256,11 @@ func hook(e Endpoint) {
 	_, err := kapi.Set(context.Background(), key, value, nil)
 	if err != nil {
 		log.Printf("Can't enable backend on key %v", key)
-		log.Print(err)
+		if cerr, ok := err.(*client.ClusterError); ok {
+			log.Print(cerr.Detail())
+		} else {
+			log.Print(err)
+		}
 		return
 	}	
 
