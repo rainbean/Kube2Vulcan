@@ -67,8 +67,8 @@ func main() {
 	var wsPodsErrors chan string = make(chan string)
 	var wsSvcErrors chan string = make(chan string)
 
-	podsEndpoint := fmt.Sprintf("ws://%v/api/v1/pods?watch=true", argK8sAddr)
-	svcEndpoint := fmt.Sprintf("ws://%v/api/v1/services?watch=true", argK8sAddr)
+	podsEndpoint := fmt.Sprintf("ws://%v/api/v1/pods?watch=true", *argK8sAddr)
+	svcEndpoint := fmt.Sprintf("ws://%v/api/v1/services?watch=true", *argK8sAddr)
 	
 	go podsListener(openConnection(podsEndpoint), wsPodsErrors)
 	go svcListener(openConnection(svcEndpoint), wsSvcErrors)
@@ -279,7 +279,8 @@ func hook(e Endpoint) {
 	key = fmt.Sprintf("/vulcand/frontends/%v/frontend", uuid)
 	rule := fmt.Sprintf("HostRegexp(`%v.%v.*`) && Port(`%v`)", e.Name, e.Namespace, e.Port)
 	//rule := fmt.Sprintf("HostRegexp(`%v.%v.*`)", e.Name, e.Namespace)
-	value = fmt.Sprintf(`{"Type": "http", "BackendId": "%v", "Route": "%v", "Settings": {"PassHostHeader": %v}}`, uuid, rule, argRetainHostHeader)
+	value = fmt.Sprintf(`{"Type": "http", "BackendId": "%v", "Route": "%v", "Settings": {"PassHostHeader": %v}}`, 
+		uuid, rule, *argRetainHostHeader)
 
 	_, err = kapi.Set(context.Background(), key, value, nil)
 	if err != nil {
@@ -297,26 +298,8 @@ func unhook(e Endpoint) {
 	// uuid name (prefix)
 	uuid := fmt.Sprintf("%v-%v", e.Namespace, e.Name)
 
-	// remove backend
-	r, err := kapi.Get(context.Background(), "/vulcand/backends", nil)
-	if err != nil {
-		log.Println("Can't get backend list")
-        log.Print(err)
-		return
-    }
-	
-	for _, node := range r.Node.Nodes {
-        if strings.Contains(node.Key, uuid) {
-			// match key, remove it recursively
-            _, err = kapi.Delete(context.Background(), node.Key, &client.DeleteOptions{Recursive: true})
-            if err != nil {
-				log.Print(err)
-            }
-		}
-    }
-
 	// remove frontend
-	r, err = kapi.Get(context.Background(), "/vulcand/frontends", nil)
+	r, err := kapi.Get(context.Background(), "/vulcand/frontends", nil)
 	if err != nil {
 		log.Println("Can't get frontend list")
         log.Print(err)
@@ -332,10 +315,28 @@ func unhook(e Endpoint) {
             }
 		} 
     }
+
+	// remove backend
+	r, err = kapi.Get(context.Background(), "/vulcand/backends", nil)
+	if err != nil {
+		log.Println("Can't get backend list")
+        log.Print(err)
+		return
+    }
+	
+	for _, node := range r.Node.Nodes {
+        if strings.Contains(node.Key, uuid) {
+			// match key, remove it recursively
+            _, err = kapi.Delete(context.Background(), node.Key, &client.DeleteOptions{Recursive: true})
+            if err != nil {
+				log.Print(err)
+            }
+		}
+    }
 }
 
 func addListenPorts() {
-	log.Printf("Enable extra listen port of Vulcan, %v", argVulcandPorts)
+	log.Printf("Enable extra listen port of Vulcan, %v", *argVulcandPorts)
 
 	// remove previous listen ports
 	_, err := kapi.Delete(context.Background(), "/vulcand/listeners", &client.DeleteOptions{Recursive: true})
