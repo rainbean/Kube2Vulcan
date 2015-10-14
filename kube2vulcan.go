@@ -53,7 +53,7 @@ func main() {
         Endpoints:               []string{*argEtcdAddr},
         Transport:               client.DefaultTransport,
         // set timeout per request to fail fast when the target endpoint is unavailable
-        HeaderTimeoutPerRequest: time.Second,
+        HeaderTimeoutPerRequest: 5 * time.Second,
     }
     etcClient, err := client.New(cfg)
     if err != nil {
